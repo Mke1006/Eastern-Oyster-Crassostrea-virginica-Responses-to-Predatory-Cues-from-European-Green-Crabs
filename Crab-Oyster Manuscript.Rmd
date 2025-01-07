@@ -1,0 +1,909 @@
+---
+title: "Crab-Oyster Manuscript"
+author: "Michaela Edwards"
+date: "2024-11-01"
+output: html_document
+---
+
+```{r set working directory and packages}
+#packages
+library(dplyr)
+library(pacman)
+library(ggplot2)
+library(tidyverse)
+library(tidyr)
+library(multcompView)
+library(viridis)
+library(scales)
+library(chron)
+library(zoo)
+library(patchwork)
+library(lubridate)
+library(lme4)
+library(data.table)
+library(gridExtra)
+library(DHARMa)
+library(multcomp)
+```
+
+```{r input data}
+needs_fixing <- read.csv("Behavior_Data.csv")
+a<-read.csv("treatment_assignment.csv", header=TRUE,na.strings="")
+morphology <- read.csv("oyster_crab_weight_measurements.csv", header=TRUE, na.strings = "")
+precipitation <- read.csv("precipitation.csv", header = TRUE, na.strings = "")
+environment <- read.csv("YSI_Readings.csv")
+chl <- read.csv("Chlorophyll Readings.csv")
+HOBO <- read.csv("HOBO Logger data- crab|oyster.csv")
+```
+
+```{r Identifying the range of the data for each individual}
+# Function to filter and find max and min within a range
+find_max_min <- function(column) {
+  max <- max(column[column >= 500 & column <= 800], na.rm = TRUE)
+  min <- min(column[column >= 500 & column <= 800], na.rm = TRUE)
+  return(c(max, min))
+}
+
+# Filter columns that start with "oyst", apply the function, and bind the results
+max_min_values <- needs_fixing %>%
+  select(starts_with("oyst")) %>%
+  summarise(across(everything(), find_max_min))
+
+# Print the result
+print(max_min_values)
+```
+
+```{r normalizing raw data}
+#normalization function
+reverse_normalize <- function(X) {
+  oys <- ifelse(X < 500 | X > 800, NA, X)
+  (oys - max(oys, na.rm = TRUE)) / (min(oys, na.rm = TRUE) - max(oys, na.rm = TRUE))
+}
+
+#make oysters an object
+oysters <- grep('^oyst', colnames(needs_fixing), value = TRUE)
+
+# Apply the reverse normalization function to oyster columns
+behavior2 <- needs_fixing %>%
+  group_by(Date) %>%
+  mutate_at(vars(starts_with("oyster")), reverse_normalize) %>%
+  ungroup()
+# Combine the normalized results into a new data frame
+behavior2 <- data.frame(behavior2)
+
+# add gape to oyster columns
+colnames(behavior2)[colnames(behavior2) %in% oysters] <- paste(oysters, 'gape', sep = "_")
+
+# Combine behavior2 back into behavior1
+behavior1 <- data.frame(cbind(seconds = needs_fixing$seconds, Date_Time = mdy_hms(paste(needs_fixing$Date, needs_fixing$Timestamp, sep = " ")), behavior2))
+
+# view dataset
+head(behavior1)
+str(behavior1)
+
+#long format
+beh_transform_long <- pivot_longer(behavior1, 
+                        cols = starts_with("oyst"), 
+                        names_to = "oyster_identity", 
+                        values_to = "gaping")
+
+beh_transform_long$Date_Time <- as.POSIXct(beh_transform_long$Date_Time, format = "%m/%d/%y %H:%M")
+
+
+#putting treatment and long data together
+behavior_long<-merge(beh_transform_long, a, all=TRUE)
+behavior_long<-behavior_long %>% 
+  filter(!is.na(gaping), !is.na(Crab_treatment)) %>% 
+  mutate(Hours=as.numeric(seconds)/60)
+str(behavior_long)
+
+#making date a vector for graphing and grouping purposes
+behavior_long$Date <- as.Date(behavior_long$Date, format("%m/%d/%y"))
+#making the time a vector for graphing and grouping purposes
+behavior_long$Timestamp <- times(behavior_long$Timestamp)
+
+str(behavior_long)
+```
+
+```{r ordering and naming of individuals for future graphs}
+#naming based on their ID number
+names <- c("oyster.1_gape" = "1",
+           "oyster.2_gape" = "2",
+           "oyster.3_gape" = "3",
+           "oyster.4_gape" = "4",
+           "oyster.5_gape" = "5",
+           "oyster.6_gape" = "6",
+           "oyster.7_gape" = "7",
+           "oyster.8_gape" = "8",
+           "oyster.9_gape" = "9",
+           "oyster.10_gape" = "10",
+           "oyster.11_gape" = "11",
+           "oyster.12_gape" = "12",
+           "oyster.13_gape" = "13",
+           "oyster.14_gape" = "14",
+           "oyster.15_gape" = "15")
+
+#ordering based on treatment
+custom_order <- c("oyster.1_gape",
+                  "oyster.2_gape",
+                  "oyster.3_gape",
+                  "oyster.4_gape",
+                  "oyster.5_gape",
+                  "oyster.6_gape",
+                  "oyster.7_gape",
+                  "oyster.8_gape",
+                  "oyster.9_gape",
+                  "oyster.10_gape",
+                  "oyster.11_gape",
+                  "oyster.12_gape",
+                  "oyster.13_gape",
+                  "oyster.14_gape",
+                  "oyster.15_gape")
+#degree open range for gaping class graph
+range <- c("20 - 30", "30 - 40", "40 - 50", "50 - 60", "60 - 70", "70 - 80", "80 - 90")
+
+```
+
+```{r}
+#data frame for time spent open
+percentage_above_0.20 <- behavior_long %>%
+  group_by(Crab_treatment, oyster_identity) %>%
+  summarize(Percentage_of_Time_Spent_Open= sum(gaping > 0.20, na.rm = TRUE) / n()) %>%
+  mutate(Percentage_of_Time_Spent_Open= Percentage_of_Time_Spent_Open* 100)
+  
+percent_open <- group_by(percentage_above_0.20, Crab_treatment) %>%
+  summarise(mean=mean(Percentage_of_Time_Spent_Open), quant = quantile(Percentage_of_Time_Spent_Open, probs = 0.75)) %>%
+  arrange(desc(mean))
+  
+percentage_above_0.20_date <- behavior_long %>%
+  group_by(Crab_treatment, oyster_identity, Date) %>%
+  summarize(Percentage_of_Time_Spent_Open= sum(gaping > 0.20, na.rm = TRUE) / n()) %>%
+  mutate(Percentage_of_Time_Spent_Open= Percentage_of_Time_Spent_Open* 100)
+  
+percentage_above_0.20_date$oyster_identity <- factor(percentage_above_0.20_date$oyster_identity, levels = custom_order)
+
+grouped_data <- behavior_long%>%
+  mutate(Treatment = ifelse(oyster_identity %in% behavior_long$oyster_identity, behavior_long$Crab_treatment, NA))%>%
+  mutate(oyster_identity_num = as.numeric(sub("oyster\\.(\\d+)_gape", "\\1", oyster_identity))) %>%
+  mutate(oyster_identity_num = ifelse(is.na(oyster_identity_num), NA, oyster_identity_num)) %>%
+  group_by(Date, oyster_identity) %>%
+  summarize(daily_percent_above_0.2 = mean(gaping > 0.2, na.rm = TRUE) * 100, Treatment = first(Crab_treatment))
+
+grouped_data$oyster_identity <- factor(grouped_data$oyster_identity, levels = custom_order)
+
+behavior_long$Hour_Minute <- format(behavior_long$Date_Time, "%H:%M")
+behavior_long$Hour <- format(behavior_long$Date_Time, "%H")
+
+date_hour <- behavior_long %>%
+  group_by(Hour, Date, Crab_treatment) %>%
+  # mutate(Hour_Minute = as.character(Hour_Minute)) %>%
+  summarize(percent_above_0.2 = mean(gaping > 0.2, na.rm = TRUE) * 100)
+
+
+```
+
+```{r graphing gape class and % time spent by treatment}
+#graph idea from Tonk et al.
+behavior_long$gaping_group <- substr(behavior_long$gaping, start = 1, stop = 3)
+#gaping_group must be treated as a numeric
+percentage_gape_class <- behavior_long %>%
+  mutate(grouping_zeros = case_when(gaping_group %in% c("0", "0.0") ~ "0.0", TRUE ~ gaping_group)) %>%
+  mutate(gaping_group = as.numeric(grouping_zeros)) %>%
+  group_by(oyster_identity) %>%
+  mutate(total_obs = n()) %>%
+  group_by(oyster_identity, gaping_group) %>%
+  summarize(Group_Count = n(),
+            Total_Obs = first(total_obs),
+            Percentage_of_Total = Group_Count / Total_Obs * 100)
+
+percentage_gape_class <- left_join(percentage_gape_class, a, by = "oyster_identity") 
+
+
+head(percentage_gape_class)
+#gape_class in numeric
+percentage_gape_class$gaping_group <- as.numeric(as.character(percentage_gape_class$gaping_group))
+
+#creating labels for graphs (altering the x-axis)
+percentage_gape_class$gaping_range <- paste(percentage_gape_class$gaping_group * 100, "-", (percentage_gape_class$gaping_group + 0.1) * 100)
+
+percentage_gape_class_combined <- percentage_gape_class
+#combining the 0.9 group and 1 so they are in the 90-100 rang
+
+percentage_gape_class_combined <- percentage_gape_class %>%
+  mutate(gaping_range = ifelse(gaping_group >= 0.9 & gaping_group == 1, "90 - 100", gaping_range)) %>%
+  group_by(oyster_identity, gaping_range) %>%
+  summarise(
+    Group_Count = sum(Group_Count),
+    Total_Obs = first(Total_Obs),
+    Percentage_of_Total = sum(Percentage_of_Total)
+  ) %>%
+  ungroup()
+#signifying which groups to combine
+percentage_gape_class_combined <- percentage_gape_class_combined %>%
+  mutate(gaping_range = ifelse(grepl("90-100", gaping_range), "90 - 100", gaping_range))
+
+# Aggregate the 90-100 data
+percentage_gape_class_combined <- percentage_gape_class_combined %>%
+  group_by(oyster_identity, gaping_range) %>%
+  summarize(
+    Group_Count = sum(Group_Count),
+    Total_Obs = first(Total_Obs),
+    Percentage_of_Total = sum(Percentage_of_Total)
+  ) %>%
+  ungroup()
+
+
+percentage_gape_class_combined <- percentage_gape_class_combined %>%
+  mutate(oyster_identity_num = as.numeric(sub("oyster\\.(\\d+)_gape", "\\1", oyster_identity)))
+percentage_gape_class_combined <- percentage_gape_class_combined %>%
+  mutate(oyster_group = case_when(
+    oyster_identity_num %in% 1:5 ~ "Control",
+    oyster_identity_num %in% 6:10 ~ "Olfactory",
+    oyster_identity_num %in% 11:15 ~ "Tactile",
+  ))
+# gaping class but grouping by treatment rather than having a graph for each individual
+average_gape_class <- percentage_gape_class_combined %>%
+  group_by(oyster_group, gaping_range) %>%
+  summarize(Average_Percentage = mean(Percentage_of_Total),
+            sd_value2 = sd(Percentage_of_Total) / sqrt(n())) #calculate std error of mean
+#standard error error bars
+stderr <- function(x) sqrt(var(x)/length(x))
+
+summary_data <- percentage_gape_class_combined%>%
+  group_by(oyster_group)%>%
+  summarise(
+  mean_value2 = mean(Percentage_of_Total),
+  sd_value2 = stderr(Percentage_of_Total)
+)
+#new data frame for gaping classes
+average_gape_class <- merge(average_gape_class, summary_data, by = "oyster_group")
+
+ggplot(average_gape_class, aes(x = gaping_range, y = Average_Percentage, group = oyster_group, linetype = oyster_group)) +
+  geom_line(size = 1) +
+  geom_errorbar(data = average_gape_class, aes(ymin = Average_Percentage - sd_value2.x, ymax = Average_Percentage + sd_value2.x), width = 0.2, position = position_identity()) +
+  geom_point() +
+  labs(x = "Degree Open", y = "Time Spent Open Throughout Experiment", color = "Crab Treatment") +
+  geom_vline(xintercept = 2, col = "ivory4", lty = 5, lwd = 1) +
+  guides(linetype = guide_legend(title = "Crab Treatment"), fill = "none") +
+  theme_classic()
+
+#Kolmogorov - smirnov test
+control_distribution <- average_gape_class %>%
+  filter(oyster_group == "Control") %>%
+  select(c(oyster_group, gaping_range, Average_Percentage))
+olfactory_distribution <- average_gape_class %>%
+  filter(oyster_group == "Olfactory") %>%
+  select(c(oyster_group, gaping_range, Average_Percentage))
+tactile_distribution <- average_gape_class %>%
+  filter(oyster_group == "Tactile") %>%
+  select(c(oyster_group, gaping_range, Average_Percentage))
+
+
+ks_c_s_results <- ks.test(control_distribution$Average_Percentage, olfactory_distribution$Average_Percentage)
+print(ks_c_s_results)
+ks_c_t_results <- ks.test(control_distribution$Average_Percentage, tactile_distribution$Average_Percentage)
+print(ks_c_t_results)
+ks_s_t_results <- ks.test(olfactory_distribution$Average_Percentage, tactile_distribution$Average_Percentage)
+print(ks_s_t_results)
+
+```
+
+
+```{r}
+#this is turning the numbers >0.2 to 1 and below to 0 for a logistical regression JAGS model
+behavior_long$ones_and_zeros <- ifelse(behavior_long$gaping <= 0.2, 0, 1)
+
+#this is turning the treatment groups into different levels 1,2,3 instead of the words chr -> numeric
+behavior_long$treatment_numeric <- as.numeric(factor(behavior_long$Crab_treatment, levels = c("control", "olfactory", "tactile")))
+
+
+#making the specific data frame that have the number of times it was 0 or 1 out of all the points collected over the experiment grouped by individual and treatment
+count_open <- behavior_long %>%
+  group_by(oyster_identity, Date) %>%
+  mutate(Open = sum(ones_and_zeros == 1, na.rm = TRUE), 
+         Closed = sum(ones_and_zeros == 0, na.rm = TRUE)) %>%
+  select(oyster_identity, treatment_numeric, Crab_treatment, Open, Closed, Date) %>%
+  distinct(oyster_identity, .keep_all = TRUE)
+#over treatments identifying the average amount of time spent open over entire study
+average_open <- count_open %>%
+  group_by(Crab_treatment) %>%
+  summarize(average_open = mean(Open) / 5) %>%
+  ungroup()
+#merging the two data frames above
+count_open <- merge(count_open, average_open, by = "Crab_treatment")
+
+#taking the numbers from the identity column to make identification easier
+count_open$oyster_identity <- str_extract(count_open$oyster_identity, "\\d+")
+```
+
+
+```{r height change graph}
+#making column of length difference
+morphology$length_change_mm <- morphology$entire.oyster_mm_end - morphology$entire.oyster_mm_start 
+
+morphology$length_change_mm_std <- (morphology$entire.oyster_mm_end - morphology$entire.oyster_mm_start) / morphology$entire.oyster_mm_start
+
+#grouping length change by treatment
+average_length_change <- morphology %>%
+  group_by(Treatment) %>%
+  summarize(length_change_mm_std = mean((entire.oyster_mm_end - entire.oyster_mm_start)/entire.oyster_mm_start, na.rm = TRUE))
+#summarizing grouped data
+summary_data_2 <- morphology %>%
+  group_by(Treatment) %>%
+  summarise(
+    mean_value2 = mean(length_change_mm_std),
+    sd_value2 = stderr(length_change_mm_std)
+  )
+
+stderr <- function(x) sqrt(var(x)/length(x))
+
+average_length_change <- merge(average_length_change, summary_data_2, by = "Treatment")
+
+#point graph for the shell height change over the exp.
+height_change <- average_length_change %>%
+  ggplot(aes(x = Treatment, y = length_change_mm_std, color = Treatment)) +
+  geom_point(alpha = 0.7, size = 6) +
+  geom_errorbar(aes(ymin = mean_value2 - sd_value2, ymax = mean_value2 + sd_value2), width = 0.2) +
+  geom_point(data = morphology, aes(x = Treatment, y = length_change_mm_std), size = 2, color = "ivory4") +
+  labs(x = "Treatment", y = "Proportional  Height  Change (mm)", title = "A") +
+  scale_color_manual(values = c("lightblue", "blue", "black")) +
+  theme(legend.position = "none", 
+        axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 16)) +
+  theme_classic()
+
+# Perform ANOVA if the response is continuous and normally distributed
+morphology$Treatment <- as.factor(morphology$Treatment)
+
+anova_length_change <-  lm(length_change_mm_std ~ Treatment, 
+                                  data = morphology)
+anova(anova_length_change, test = "F")
+summary(anova_length_change)
+summary(glht(anova_length_change, linfct = mcp(Treatment = "Tukey")))
+
+```
+
+```{r weight change graph}
+morphology$weight_change_g <- morphology$wet_g_end - morphology$wet_g_start
+
+morphology$weight_change_g_std <- (morphology$weight_change_g) / morphology$wet_g_start
+
+#grouping length change by treatment
+average_weight_change <- morphology %>%
+  group_by(Treatment) %>%
+  summarize(weight_change_g_std = mean((wet_g_end - wet_g_start)/wet_g_start, na.rm = TRUE))
+
+#summarizing grouped data
+summary_data_3 <- morphology %>%
+  group_by(Treatment) %>%
+  summarise(
+    mean_value2 = mean(weight_change_g_std),
+    sd_value2 = stderr(weight_change_g_std)
+  )
+
+stderr <- function(x) sqrt(var(x)/length(x))
+
+average_weight_change <- merge(average_weight_change, summary_data_3, by = "Treatment")
+
+#point graph for oyster weight difference over exp.
+weight_change <- average_weight_change %>%
+  ggplot(aes(x = Treatment, y = weight_change_g_std, color = Treatment)) +
+  geom_point(alpha = 0.7, size = 6) +
+  geom_errorbar(aes(ymin = mean_value2 - sd_value2, ymax = mean_value2 + sd_value2), width = 0.2) +
+  geom_point(data = morphology, aes(x = Treatment, y = weight_change_g_std), size = 2, color = "ivory4") +
+  labs(x = "Treatment", y = "Proportional  Weight  Change (g)", title = "B") +
+  scale_color_manual(values = c("lightblue", "blue", "black")) +
+  theme(legend.position = "none", 
+        axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 16)) +
+  theme_classic()
+#ANOVA
+morphology$Treatment <- factor(morphology$Treatment)
+anova_weight_change <-  lm(weight_change_g_std ~ Treatment,
+                                  data = morphology)
+anova(anova_weight_change)
+summary(anova_weight_change)
+summary(glht(anova_weight_change, linfct = mcp(Treatment = "Tukey")))
+```
+
+
+```{r combining height and weight graphs}
+height_change <- average_length_change %>%
+  ggplot(aes(x = Treatment, y = length_change_mm_std, color = Treatment)) +
+  geom_point(alpha = 0.7, size = 10) +
+  geom_errorbar(aes(ymin = mean_value2 - sd_value2, ymax = mean_value2 + sd_value2), width = 0.2) +
+  geom_point(data = morphology, aes(x = Treatment, y = length_change_mm_std), size = 6, color = "ivory4") +
+  labs(x = "Treatment", y = "Proportional  Height  Change (mm)", title = "A") +
+  scale_color_manual(values = c("black", "black", "black")) +
+  theme_classic(base_size = 16) +  # Set base size for relative scaling
+  theme(
+    legend.position = "none",
+    axis.text = element_text(size = rel(1.5)),  # Relative to base size
+    axis.title = element_text(size = rel(1.5))
+  )
+
+weight_change <- average_weight_change %>%
+  ggplot(aes(x = Treatment, y = weight_change_g_std, color = Treatment)) +
+  geom_point(alpha = 0.7, size = 10) +
+  geom_errorbar(aes(ymin = mean_value2 - sd_value2, ymax = mean_value2 + sd_value2), width = 0.2) +
+  geom_point(data = morphology, aes(x = Treatment, y = weight_change_g_std), size = 6, color = "ivory4") +
+  labs(x = "Treatment", y = "Proportional  Weight  Change (g)", title = "B") +
+  scale_color_manual(values = c("black", "black", "black")) +
+  theme_classic(base_size = 16) +  # Set base size for relative scaling
+  theme(
+    legend.position = "none",
+    axis.text = element_text(size = rel(1.5)),  # Relative to base size
+    axis.title = element_text(size = rel(1.5))
+  )
+
+height_change <- height_change + theme(
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 30)
+)
+weight_change <- weight_change + theme(
+  axis.title = element_text(size = 30),
+  axis.text = element_text(size = 30)
+)
+
+morphology_graph <- height_change / weight_change
+
+
+ggsave("morphology changes.png", plot = morphology_graph, width = 15, height = 17)
+```
+
+```{r}
+# environmental data
+environment$date <- as.Date(environment$date, format("%m/%d/%y"))
+chl$date <- as.Date(chl$date, format("%m/%d/%y"))
+HOBO$date_time <- as.POSIXct(HOBO$Date.Time..EST.EDT., format = "%m/%d/%Y %H:%M:%S")
+HOBO$date <- as.Date(HOBO$Date.Time..EST.EDT., format = "%m/%d/%Y")
+
+#making environment data cleaner for data analysis
+meta_data <- environment %>%
+  left_join(chl, by= "date")
+meta_data <-  meta_data%>%
+  select(date, time, temperatureC, salinity_ppt, DO_mg.L, chl_a)
+
+environment <- merge(environment, chl, by = "date", all = TRUE)
+
+environment_long <- environment %>%
+  pivot_longer(cols = c(temperatureC, salinity_ppt, DO_mg.L, chl_a), names_to = "variable", values_to = "value")
+
+
+custom_labeller <- function(variable) {
+  variable_labels <- c(
+    temperatureC = "Temperature (C)",
+    salinity_ppt = "Salinity (ppt)",
+    DO_mg.L = "DO (mg/L)",
+    chl_a = "Chlorophyll"
+  )
+  return(variable_labels[variable])
+}
+
+
+#selecting specific columns for the clean data frame for temperature and light
+HOBO_LOGGER <- HOBO %>%
+  select(c(date_time, date, Ch.1...Temperature.....C., Ch.2...Light....lux.)) %>%
+  rename("Temperature (C)" = Ch.1...Temperature.....C., 
+         "Light (lux)" = Ch.2...Light....lux.)
+HOBO_LOGGER$Avg_temp <- ave(HOBO_LOGGER$`Temperature (C)`, HOBO_LOGGER$date, FUN = mean)
+
+#making date into day of experiment
+HOBO_LOGGER$DoY <- yday(HOBO_LOGGER$date)
+#changing day of year to 1-58 rather than the actual day it is in the year by subtracting 227
+HOBO_LOGGER$DoY <- HOBO_LOGGER$DoY - 227
+
+#Specific date for identifying sun rise and sunset levels to identify day and night
+specific_date <- "2023-08-16"
+specific_date_light <- HOBO_LOGGER %>%
+  filter(date(date_time) == specific_date)
+#sunrise was 5:53 and sunset was 7:47 (19:47) 
+#light levels were 7.82 at 6am and 0.43 at 7:50pm make these values the cut off
+HOBO_LOGGER <- HOBO_LOGGER%>%
+  mutate(Daytime_Nighttime = ifelse(`Light (lux)` > 7.82, "day", "night"))
+
+
+#precipitation graph and data data from the USGS in Lamprey river
+precipitation$date_time <- as.POSIXct(precipitation$date_time, format = "%m/%d/%y %H:%M")
+precipitation$date <- as.Date(precipitation$date_time, format = "%m/%d/%y")
+precipitation <- precipitation %>%
+  group_by(date) %>%
+  mutate(Avg_precip = mean(gage_height, na.rm = TRUE)) %>%
+  ungroup()
+
+temp_and_precip <- merge(precipitation, HOBO_LOGGER, by = "date")
+
+#adding chl to temp and precipitation data
+meta_data_chl <- meta_data %>%
+  rename("date" = date)
+
+temp_and_precip_and_chla <- left_join(temp_and_precip, meta_data_chl, by = "date")
+#interpolating the NAs in Chl
+temp_and_precip_and_chla$chl_a <- na.approx(temp_and_precip_and_chla$chl_a, na.rm = FALSE)
+
+temp_and_precip_and_chla <- temp_and_precip_and_chla %>%
+  select(date, date_time.y, `Temperature (C)`, Avg_temp, gage_height, Avg_precip, Daytime_Nighttime, DoY, chl_a)
+
+temp_and_precip_and_chla$Avg_temp <- as.numeric(temp_and_precip_and_chla$Avg_temp)
+temp_and_precip_and_chla$Avg_precip <- as.numeric(temp_and_precip_and_chla$Avg_precip)
+temp_and_precip_and_chla$chl_a <- as.numeric(temp_and_precip_and_chla$chl_a)
+```
+
+```{r water parameter specifics for results section}
+temp_over_exp <- ggplot(data = temp_and_precip_and_chla, aes(x = DoY, y = Avg_temp))+
+  geom_line(size = 1, color = "black", linetype = "solid")+
+  labs(x = "Day of Experiment", y = "Temperature (°C)")+
+  theme_classic()
+precip_over_exp <- ggplot(data = temp_and_precip_and_chla, aes(x = DoY, y = Avg_precip))+
+  geom_line(size = 1, color = "black", linetype = "dashed")+
+  labs(x = "Day of Experiment", y = "Gage Height (ft)", title = NULL)+
+  theme_classic()
+chl_over_exp <- ggplot(data = temp_and_precip_and_chla, aes(x = DoY, y = chl_a))+
+  geom_line(size = 1,color = "black", linetype = "dotdash")+
+  labs(x = "Day of Experiment", y = "Chlorophyll a (ug/L)", title = NULL)+
+  theme_classic()
+#setting axis title and tick marks to specific size
+temp_over_exp <- temp_over_exp + theme(
+  axis.title = element_text(size = 20),
+  axis.text = element_text(size = 20)
+)
+precip_over_exp <- precip_over_exp + theme(
+  axis.title = element_text(size = 20),
+  axis.text = element_text(size = 20)
+)
+chl_over_exp <- chl_over_exp + theme(
+  axis.title = element_text(size = 20),
+  axis.text = element_text(size = 20)
+)
+
+water_parameter_graph <- (temp_over_exp / precip_over_exp / chl_over_exp) +
+  plot_annotation(tag_levels = "A")
+
+print(water_parameter_graph)
+
+ggsave("Water_Parameters_graph.png", plot = water_parameter_graph, width = 10, height = 15, dpi = 300)
+
+```
+
+```{r Statistic preperation}
+#the datasets that will be used for the statisitics will be date_hour which will be percentage of time spent >0.2 as the response for every hour of a day, activity_counts_date_ind for activity levels as the response for every individual for each day, for environment data there is the temperature and light from the HOBO loggers which that data will be HOBO_LOGGER
+
+#eliminate date replicates in HOBO_LOGGER and averaging the temperature and light over each day
+HOBO_LOGGER_sum <- HOBO_LOGGER%>%
+  group_by(date) %>%
+  summarise(
+    `Temperature (C)` = mean(`Temperature (C)`),
+    `Light (lux)` = mean(`Light (lux)`)) %>%
+  ungroup()
+
+#eliminate date replicates in meta_data and averaging the chl over each day
+meta_data_over_exp <- HOBO_LOGGER_sum %>%
+  left_join(meta_data, by = c("date"))
+
+#CHANGING DATE TO A NUMERIC VARIABLE FOR USE IN THE MODEL
+#creating a new column for day of year from the Date
+#doing this for both the datasets used 
+activity_counts_date_ind$DoY <- yday(activity_counts_date_ind$date)
+
+count_open <- behavior_long %>%
+  group_by(oyster_identity, Date) %>%
+  mutate(Open = sum(ones_and_zeros == 1, na.rm = TRUE), 
+         Closed = sum(ones_and_zeros == 0, na.rm = TRUE)) %>%
+  select(oyster_identity, treatment_numeric, Crab_treatment, Open, Closed, Date) %>%
+  distinct(oyster_identity, .keep_all = TRUE)
+
+count_open <- count_open %>%
+  rename("date" = Date)
+
+count_open$DoY <- yday(count_open$date)
+
+
+#changing day of year to 1-58 rather than the actual day it is in the year by subtracting 227
+count_open$DoY <- count_open$DoY - 227
+
+activity_counts_date_ind$DoY <- activity_counts_date_ind$DoY - 227
+
+
+open_and_light_temp <- count_open
+
+```
+
+```{r organizing dataset for hour-day-light GLM}
+
+# Ensure the Timestamp column is a character vector
+behavior_long$Timestamp <- as.character(behavior_long$Timestamp)
+
+# Convert the Timestamp column to POSIXct format
+behavior_long <- behavior_long %>%
+  mutate(Timestamp = as.POSIXct(Timestamp, format = "%H:%M:%S"))
+
+# Group by oyster_identity, Date, and Hour, then perform the desired operations
+count_open_hour <- behavior_long %>%
+  group_by(oyster_identity, Date, Hour) %>%
+  summarise(Open = sum(ones_and_zeros == 1, na.rm = TRUE),
+            Closed = sum(ones_and_zeros == 0, na.rm = TRUE),
+            treatment_numeric = first(treatment_numeric),
+            Crab_treatment = first(Crab_treatment)) %>%
+  ungroup()
+
+open_hour <- count_open_hour %>%
+  group_by(oyster_identity, Date, Hour) %>%
+  mutate(Open_closed = ifelse(Open >= 1, 1, 
+                              ifelse(Open < 1, 0)))
+
+
+#taking the numbers from the identity column to make identification easier
+open_hour$oyster_identity <- str_extract(open_hour$oyster_identity, "\\d+")
+
+#grouping the data frame by hour in each day for each oyster
+open_hour <- open_hour %>%
+  group_by(oyster_identity, Date, Hour) %>%
+  ungroup()
+#making all variables numeric (except for chr)
+open_hour <- open_hour %>%
+  mutate(across(c(Open, Closed, Hour, treatment_numeric, Open_closed), as.numeric))
+
+
+
+HOBO_LOGGER_hour <- HOBO_LOGGER %>%
+  group_by(date, hour = hour(date_time)) %>%
+  mutate(
+    `Temperature (C)` = mean(`Temperature (C)`, na.rm = TRUE),
+    `Light (lux)` = mean(`Light (lux)`, na.rm = TRUE)) %>%
+  rename("Date" = date, "Hour" = hour)
+#removing the duplicates from the above data frame
+HOBO_LOGGER_hour <- distinct(HOBO_LOGGER_hour, Date, Hour, .keep_all= TRUE)
+#making dbl variables numeric
+HOBO_LOGGER_hour <- HOBO_LOGGER_hour %>%
+  mutate(across(c(`Temperature (C)`, `Light (lux)`, Avg_temp, DoY), as.numeric))
+
+count_open_hour_hobo <-
+  left_join(open_hour, HOBO_LOGGER_hour, by = c("Date", "Hour")) %>%
+  rename("date" = Date)
+  
+
+meta_data_use <- meta_data %>%
+  select(date, salinity_ppt, DO_mg.L, chl_a) %>%
+  distinct()
+
+
+#need to fill columns with NAs 
+fill_ysi <- c("salinity_ppt", "DO_mg.L", "chl_a")
+
+count_open_hour_hobo_ysi <-
+  left_join(count_open_hour_hobo, meta_data_use, by = c("date")) %>%
+  mutate(across(starts_with("salinity_ppt"), ~na.approx(., rule = 2)),
+         across(starts_with("DO_mg.L"), ~na.approx(., rule = 2)), 
+         across(starts_with("chl_a"), ~na.approx(., rule = 2)))
+
+
+count_open_hour_hobo_ysi$DoY <- yday(count_open_hour_hobo_ysi$date)
+
+#changing day of year to 1-58 rather than the actual day it is in the year by subtracting 227
+count_open_hour_hobo_ysi$DoY <- count_open_hour_hobo_ysi$DoY - 227
+
+
+
+day_night_open <- count_open_hour_hobo_ysi %>%
+  group_by(date, Daytime_Nighttime, oyster_identity, Crab_treatment, DoY) %>%
+  summarise(Sum_Open = sum(Open_closed),
+            length = length(Open_closed)) %>%
+  mutate(Closed = (length - Sum_Open),
+         prop_open = (Sum_Open / length))
+```
+
+```{r GLMM for day and light along with crab treatment THE MODEL THAT WILL BE USED!!!!!!!!!!!}
+count_open_hour_hobo_ysi$Daytime_Nighttime <- as.factor(count_open_hour_hobo_ysi$Daytime_Nighttime)
+count_open_hour_hobo_ysi$Crab_treatment <- as.factor(count_open_hour_hobo_ysi$Crab_treatment)
+
+str(count_open_hour_hobo_ysi)
+#extra steps need to be taken to scale date because there are only 59 unique values but there are replicates###################
+
+# Extract unique values
+unique_dates <- unique(day_night_open$date)
+
+# Scale the unique values
+scaled_unique_dates <- scale(unique_dates)
+
+# Create a mapping from original values to scaled values
+date_mapping <- setNames(as.vector(scaled_unique_dates), unique_dates)
+
+# Apply the mapping to the original column
+day_night_open$Date_Scaled <- date_mapping[as.character(day_night_open$date)]
+
+##################end of scaling date#########################################
+
+
+day_night_open$Daytime_Nighttime <- as.factor(day_night_open$Daytime_Nighttime)
+day_night_open$Crab_treatment <- as.factor(day_night_open$Crab_treatment)
+
+
+#############################THE Regression MODEL#####################################################
+light_day_treatment_model <- glmer(cbind(Sum_Open, Closed) ~ (Crab_treatment + Daytime_Nighttime + I(Date_Scaled^2))^2 + Date_Scaled + (1 | oyster_identity), data = day_night_open, family = binomial)
+
+summary_lightdaymodel <- summary(light_day_treatment_model)
+
+anova_output <- anova(light_day_treatment_model)
+#need limer test to have the p-values and maybe Df
+
+#making the summary a data frame
+lightdate_table <- as.data.frame(summary_lightdaymodel$coefficients)
+lightdate_table$Term <- rownames(lightdate_table)
+
+#Renaming the rownames in the table
+lightdate_table <- lightdate_table %>%
+  mutate(Term = case_when(
+    Term == "(Intercept)" ~ "Intercept",
+    Term == "Crab_treatmentolfactory" ~ "olfactory",
+    Term == "Crab_treatmenttactile" ~ "Tactile",
+    Term == "Daytime_Nighttimenight" ~ "Night",
+    Term == "I(Date_Scaled^2)" ~ "Date Squared",
+    Term == "Date_Scaled" ~ "Date",
+    Term == "Crab_treatmentolfactory:Daytime_Nighttimenight" ~ "olfactory and Night",
+    Term == "Crab_treatmenttactile:Daytime_Nighttimenight" ~ "Tactile and Night",
+    Term == "Crab_treatmentolfactory:I(Date_Scaled^2)" ~ "olfactory and Date",
+    Term == "Crab_treatmenttactile:I(Date_Scaled^2)" ~ "Tactile and Date",
+    Term == "Daytime_Nighttimenight:I(Date_Scaled^2)" ~ "Night and Date",
+  ))
+#rounding the pvalues to the 3rd decimal place
+lightdate_table <- lightdate_table %>%
+  mutate(`Pr(>|z|)` = round(`Pr(>|z|)`, 3))
+
+
+lightdate_table <- lightdate_table[, c( "Term", "Estimate", "Std. Error", "z value", "Pr(>|z|)")]
+
+#create formatted table 
+model_table <- flextable(lightdate_table) %>%
+  set_header_labels(
+    Term = "Term",
+    Estimate = "Estimate",
+    `Std. Error` = "Std. Error",
+    `z value` = "z value",
+    `Pr(>|z|)` = "P-value"
+  )
+
+print(model_table)
+write.csv(lightdate_table, file = "model_table.csv", row.names = TRUE)
+```
+
+
+```{r}
+easyPredCI <- function(model,newdata=NULL,alpha=0.05) {
+    ## baseline prediction, on the linear predictor (logit) scale:
+    pred0 <- predict(model,re.form=NA,newdata=newdata)
+    ## fixed-effects model matrix for new data
+    X <- model.matrix(formula(model,fixed.only=TRUE)[-2],newdata)
+    beta <- fixef(model) ## fixed-effects coefficients
+    V <- vcov(model)     ## variance-covariance matrix of beta
+    pred.se <- sqrt(diag(X %*% V %*% t(X))) ## std errors of predictions
+    ## inverse-link function
+    linkinv <- family(model)$linkinv
+    ## construct 95% Normal CIs on the link scale and
+    ##  transform back to the response (probability) scale:
+    crit <- -qnorm(alpha/2)
+    linkinv(cbind(conf.low=pred0-crit*pred.se,
+                  conf.high=pred0+crit*pred.se))
+}
+
+newcountopen <- with(day_night_open, data.frame(
+  Crab_treatment=Crab_treatment,
+  DoY=DoY,
+  Date_Scaled = Date_Scaled,
+  Daytime_Nighttime = Daytime_Nighttime,
+  Sum_Open = Sum_Open,
+  prop_open=prop_open,
+  oyster_identity = oyster_identity
+))
+
+
+newcountopen$resp_pred <- (predict(light_day_treatment_model,newdata=newcountopen,re.form=NA, type="response"))
+
+newcountopen <- cbind(newcountopen,(easyPredCI(light_day_treatment_model,newcountopen)))
+
+str(newcountopen)
+
+newcountopen$Crab_treatment <- fct_recode(newcountopen$Crab_treatment, 
+                                          "olfactory" = "scent")
+```
+
+
+```{r creating Figure 3 plot for oyster openness}
+#shading for prediction plot
+shaded_sign <- data.frame(
+  xmin = c(0, 47),
+  xmax = c(16, 60),
+  ymin = -Inf,
+  ymax = Inf
+)
+#Prediction Plot
+day_night_date_prediction_nocol <- ggplot(newcountopen, aes(x = DoY, y = resp_pred, alpha = Crab_treatment, group = interaction(Crab_treatment, oyster_identity))) +
+  geom_point(aes(y = prop_open, shape = Crab_treatment), size = 2, position = position_jitter(width = 2)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = Crab_treatment), alpha = 0.1) +
+  scale_fill_manual(values = c("black", "cadetblue3", "cornflowerblue")) +
+  geom_line(aes( linetype = Crab_treatment), size = 1) +
+  guides(color = guide_legend(title = "Crab Treatment"), fill = "none") +
+  labs(x = "Day of Experiment", y = expression(Proportion ~ Open)) +
+  facet_wrap(~ Daytime_Nighttime) +
+  geom_rect(data = shaded_sign, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), inherit.aes = FALSE, fill = "grey", alpha = 0.4) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 13), axis.title.x = element_text(size = 13), axis.title.y = element_text(size = 13), strip.text = element_text(size = 15)) + 
+  guides (linetype = guide_legend(title = "Treatment"),
+  shape = guide_legend(title = "Treatment "),
+  alpha = guide_legend(title = "Treatment "),
+  color = guide_legend(title = "Treatment")) +
+  scale_alpha_manual(values = c("control" = 0.3, "olfactory" = 0.5, "tactile" = 0.7))
+
+ggsave("oyster gaping prediction plot-dd-green crabs.png", plot = day_night_date_prediction_nocol, bg = "transparent", width = 15, height = 10, dpi = 300)
+
+pred_gaping_and_environ <- day_night_date_prediction / rain_and_temp_over_exp
+
+print(pred_gaping_and_environ)
+
+
+pred_gaping_and_environ <- pred_gaping_and_environ +
+  theme(axis.text = element_text(size = 20))
+
+ggsave("day night gaping.png", plot = pred_gaping_and_environ, width = 20, height = 10, dpi = 300)
+```
+
+```{r finding average openness for results section}
+#comparing mid-august
+day_1_16_daytime <- newcountopen[newcountopen$DoY >= 1 & newcountopen$DoY <= 16 & newcountopen$Daytime_Nighttime == "day", ]
+
+mean(day_1_16_daytime$prop_open, na.rm = TRUE)
+
+day_1_16_nighttime <- newcountopen[newcountopen$DoY >= 1 & newcountopen$DoY <= 16 & newcountopen$Daytime_Nighttime == "night", ]
+
+mean(day_1_16_nighttime$prop_open, na.rm = TRUE)
+
+#early-october portion with general average for all oysters comparing day and nigth
+
+day_47_60_daytime <- newcountopen[newcountopen$DoY >= 47 & newcountopen$DoY <= 60 & newcountopen$Daytime_Nighttime == "day", ]
+
+mean(day_47_60_daytime$prop_open, na.rm = TRUE)
+
+day_47_60_nighttime <- newcountopen[newcountopen$DoY >= 47 & newcountopen$DoY <= 60 & newcountopen$Daytime_Nighttime == "night", ]
+
+mean(day_47_60_nighttime$prop_open, na.rm = TRUE)
+
+
+#comparing the treatments average time spent open in the middle of the experiment particularly at night
+day_16_47_night_control <- newcountopen[newcountopen$DoY >= 16 & newcountopen$DoY <= 47 & newcountopen$Daytime_Nighttime == "night" & newcountopen$Crab_treatment == "control", ]
+
+mean(day_16_47_night_control$prop_open, na.rm = TRUE)
+
+day_16_47_night_olfactory <- newcountopen[newcountopen$DoY >= 16 & newcountopen$DoY <= 47 & newcountopen$Daytime_Nighttime == "night" & newcountopen$Crab_treatment == "olfactory", ]
+
+mean(day_16_47_night_olfactory$prop_open, na.rm = TRUE)
+
+day_16_47_night_tactile <- newcountopen[newcountopen$DoY >= 16 & newcountopen$DoY <= 47 & newcountopen$Daytime_Nighttime == "night" & newcountopen$Crab_treatment == "tactile", ]
+
+mean(day_16_47_night_tactile$prop_open, na.rm = TRUE)
+
+#tactile open how much more than olfactory at beginning and end
+day_1_16_night_control <- newcountopen[newcountopen$DoY >= 1 & newcountopen$DoY <= 16 & newcountopen$Daytime_Nighttime == "night" & newcountopen$Crab_treatment == "control", ]
+
+mean(day_1_16_night_control$prop_open, na.rm = TRUE)
+
+day_1_16_night_tactile <- newcountopen[newcountopen$DoY >= 1 & newcountopen$DoY <= 16 & newcountopen$Daytime_Nighttime == "night" & newcountopen$Crab_treatment == "tactile", ]
+
+mean(day_1_16_night_tactile$prop_open, na.rm = TRUE)
+
+
+
+day_47_60_nighttime_control <- newcountopen[newcountopen$DoY >= 47 & newcountopen$DoY <= 60 & newcountopen$Daytime_Nighttime == "night" & newcountopen$Crab_treatment == "control", ]
+mean(day_47_60_nighttime_control$prop_open, na.rm = TRUE)
+
+day_47_60_nighttime_tactile <- newcountopen[newcountopen$DoY >= 47 & newcountopen$DoY <= 60 & newcountopen$Daytime_Nighttime == "night" & newcountopen$Crab_treatment == "tactile", ]
+
+mean(day_47_60_nighttime_tactile$prop_open, na.rm = TRUE)
+
+day_20_40_night <- newcountopen[newcountopen$DoY >= 20 & newcountopen$DoY <= 40 & newcountopen$Daytime_Nighttime == "night", ]
+
+day_20_40_day <- newcountopen[newcountopen$DoY >= 20 & newcountopen$DoY <= 40 & newcountopen$Daytime_Nighttime == "day", ]
+
+mean(day_20_40_night$prop_open, na.rm = TRUE)
+
+mean(day_20_40_day$prop_open, na.rm = TRUE)
+```
+
