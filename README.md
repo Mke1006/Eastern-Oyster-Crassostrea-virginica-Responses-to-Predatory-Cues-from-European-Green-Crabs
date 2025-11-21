@@ -1,4 +1,4 @@
-For access to the behavioral data please contact me. The document is to large to upload to the GitHub repository. 
+For access to full behavioral data please contact me. The document is to large to upload to the GitHub repository. 
 Contact information: michaela.edwards@unh.edu
 
 The behavioral data is the Hall effect values collected throughout the experiment. The document contains data on all fifteen oysters including the dates and times of data collection. 
